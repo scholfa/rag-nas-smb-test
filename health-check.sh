@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Health check script for the RAG system
 
 echo "=== RAG System Health Check ==="
@@ -48,7 +48,7 @@ fi
 # Check volumes
 echo ""
 echo "=== Volume Status ==="
-docker volume ls | grep rag-nas-smb-test
+docker volume ls | grep -E "docs_smb|ollama_data|vectorstore"
 
 echo ""
 echo "=== Health Check Complete ==="

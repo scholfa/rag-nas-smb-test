@@ -9,7 +9,7 @@
 
 1. **Clone & Configure**
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/scholfa/rag-nas-smb-test.git
    cd rag-nas-smb-test
    cp .env.example .env
    # Edit .env with your NAS details

@@ -1,8 +1,6 @@
 # Docker Compose Override Example
 # Copy this to docker-compose.override.yml for development settings
 
-version: '3.8'
-
 services:
   backend:
     # Enable hot reload for development
