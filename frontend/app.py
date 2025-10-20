@@ -28,33 +28,45 @@ async def upload_documents(files):
     
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
-            file_objects = []
+            # Process files one at a time to avoid memory issues
+            all_processed = []
+            all_errors = []
+            
             for file in files:
-                with open(file.name, "rb") as f:
-                    file_objects.append(("files", (os.path.basename(file.name), f.read())))
+                try:
+                    with open(file.name, "rb") as f:
+                        file_data = [("files", (os.path.basename(file.name), f.read()))]
+                    
+                    response = await client.post(
+                        f"{BACKEND_URL}/ingest/upload",
+                        files=file_data
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        all_processed.extend(data.get("processed", []))
+                        all_errors.extend(data.get("errors", []))
+                    else:
+                        all_errors.append({
+                            "filename": os.path.basename(file.name),
+                            "error": f"Upload failed: {response.text}"
+                        })
+                except Exception as e:
+                    all_errors.append({
+                        "filename": os.path.basename(file.name),
+                        "error": str(e)
+                    })
             
-            response = await client.post(
-                f"{BACKEND_URL}/ingest/upload",
-                files=file_objects
-            )
+            result = f"✅ Successfully processed {len(all_processed)} files\n\n"
+            for item in all_processed:
+                result += f"- {item['filename']}: {item['chunks']} chunks\n"
             
-            if response.status_code == 200:
-                data = response.json()
-                processed = data.get("processed", [])
-                errors = data.get("errors", [])
-                
-                result = f"✅ Successfully processed {len(processed)} files\n\n"
-                for item in processed:
-                    result += f"- {item['filename']}: {item['chunks']} chunks\n"
-                
-                if errors:
-                    result += f"\n❌ {len(errors)} errors:\n"
-                    for error in errors:
-                        result += f"- {error['filename']}: {error['error']}\n"
-                
-                return result
-            else:
-                return f"❌ Upload failed: {response.text}"
+            if all_errors:
+                result += f"\n❌ {len(all_errors)} errors:\n"
+                for error in all_errors:
+                    result += f"- {error['filename']}: {error['error']}\n"
+            
+            return result
     except Exception as e:
         return f"❌ Error uploading files: {str(e)}"
 

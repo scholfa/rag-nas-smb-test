@@ -256,8 +256,10 @@ Interactive API documentation is available at:
 
 - SMB credentials are passed via environment variables
 - The NAS volume is mounted as read-only for security
-- Consider using Docker secrets for production deployments
+- **Important**: Never commit your `.env` file to version control. The `.gitignore` file excludes it by default.
+- For production deployments, consider using Docker secrets or external secret management systems like HashiCorp Vault
 - Ensure proper network isolation for the services
+- Consider using encrypted SMB connections (SMB3 with encryption enabled on the NAS)
 
 ## 📦 Technology Stack
 

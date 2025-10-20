@@ -13,6 +13,7 @@ from pypdf import PdfReader
 from docx import Document
 import pandas as pd
 import xml.etree.ElementTree as ET
+import threading
 
 app = FastAPI(title="RAG Backend API")
 
@@ -45,6 +46,9 @@ collection = chroma_client.get_or_create_collection(
     name=COLLECTION_NAME,
     metadata={"hnsw:space": "cosine"}
 )
+
+# Thread lock for collection operations
+collection_lock = threading.Lock()
 
 
 class QueryRequest(BaseModel):
@@ -192,16 +196,19 @@ async def ingest_upload(files: List[UploadFile] = File(...)):
             # Generate embeddings
             embeddings = embedding_model.encode(chunks).tolist()
             
-            # Add to collection
-            ids = [f"{file.filename}_{i}" for i in range(len(chunks))]
+            # Add to collection with unique IDs using timestamp
+            import time
+            timestamp = int(time.time() * 1000000)  # microseconds for uniqueness
+            ids = [f"{file.filename}_{timestamp}_{i}" for i in range(len(chunks))]
             metadatas = [{"source": file.filename, "chunk": i} for i in range(len(chunks))]
             
-            collection.add(
-                embeddings=embeddings,
-                documents=chunks,
-                metadatas=metadatas,
-                ids=ids
-            )
+            with collection_lock:
+                collection.add(
+                    embeddings=embeddings,
+                    documents=chunks,
+                    metadatas=metadatas,
+                    ids=ids
+                )
             
             processed.append({
                 "filename": file.filename,
@@ -244,16 +251,20 @@ async def ingest_nas(background_tasks: BackgroundTasks):
                     # Generate embeddings
                     embeddings = embedding_model.encode(chunks).tolist()
                     
-                    # Add to collection
-                    ids = [f"{file_path.name}_{i}" for i in range(len(chunks))]
+                    # Add to collection with unique IDs using full path
+                    import time
+                    timestamp = int(time.time() * 1000000)  # microseconds for uniqueness
+                    relative_path = str(file_path.relative_to(DOCS_DIR))
+                    ids = [f"{relative_path}_{timestamp}_{i}" for i in range(len(chunks))]
                     metadatas = [{"source": str(file_path.relative_to(DOCS_DIR)), "chunk": i} for i in range(len(chunks))]
                     
-                    collection.add(
-                        embeddings=embeddings,
-                        documents=chunks,
-                        metadatas=metadatas,
-                        ids=ids
-                    )
+                    with collection_lock:
+                        collection.add(
+                            embeddings=embeddings,
+                            documents=chunks,
+                            metadatas=metadatas,
+                            ids=ids
+                        )
                     
                     processed.append(file_path.name)
                 except Exception as e:
@@ -272,10 +283,11 @@ async def query(request: QueryRequest):
     query_embedding = embedding_model.encode([request.query]).tolist()[0]
     
     # Search in vector store
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=request.top_k
-    )
+    with collection_lock:
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=request.top_k
+        )
     
     if not results["documents"][0]:
         raise HTTPException(status_code=404, detail="No relevant documents found")
@@ -305,18 +317,20 @@ async def query(request: QueryRequest):
 async def clear_collection():
     """Clear all documents from the vector store."""
     global collection
-    chroma_client.delete_collection(COLLECTION_NAME)
-    collection = chroma_client.get_or_create_collection(
-        name=COLLECTION_NAME,
-        metadata={"hnsw:space": "cosine"}
-    )
+    with collection_lock:
+        chroma_client.delete_collection(COLLECTION_NAME)
+        collection = chroma_client.get_or_create_collection(
+            name=COLLECTION_NAME,
+            metadata={"hnsw:space": "cosine"}
+        )
     return {"status": "success", "message": "Collection cleared"}
 
 
 @app.get("/stats")
 async def get_stats():
     """Get statistics about the indexed documents."""
-    count = collection.count()
+    with collection_lock:
+        count = collection.count()
     return {
         "total_chunks": count,
         "collection_name": COLLECTION_NAME
