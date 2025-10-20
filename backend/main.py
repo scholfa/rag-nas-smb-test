@@ -28,8 +28,9 @@ app.add_middleware(
 
 # Configuration
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
-DOCS_DIR = Path("/docs")
-DATA_DIR = Path("/data")
+# Allow overriding mount points for host-mounted folders (useful on Windows hosts)
+DOCS_DIR = Path(os.getenv("DOCS_DIR", "/docs"))
+DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 COLLECTION_NAME = "documents"
 
 # Initialize embedding model

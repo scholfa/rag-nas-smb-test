@@ -5,6 +5,13 @@
 - NAS with SMB share
 - 8GB+ RAM
 
+Platform notes
+
+- Linux / macOS / WSL2: `./run.sh` and `./health-check.sh` are provided. You can use the CIFS volume in `docker-compose.yml` or mount the NAS on the host and bind-mount into the container.
+- Windows (Docker Desktop): use `.
+un.ps1` and `.
+un.ps1 -Detach`. For SMB shares, mount the NAS on the Windows host (map a network drive or `net use`) and bind-mount that host path into the container via `docker-compose.override.yml`.
+
 ## Setup (5 minutes)
 
 1. **Clone & Configure**
@@ -16,10 +23,22 @@
    ```
 
 2. **Start Services**
-   ```bash
-   mkdir vectorstore
-   docker compose up -d
-   ```
+
+Linux/macOS:
+
+```bash
+mkdir -p vectorstore
+./run.sh
+```
+
+Windows (PowerShell):
+
+```powershell
+mkdir .\vectorstore
+.\run.ps1
+# or start detached
+.\run.ps1 -Detach
+```
 
 3. **Wait for Model Download** (~5-10 minutes first time)
    ```bash
@@ -58,6 +77,8 @@ docker compose logs backend
 
 # Verify credentials in .env
 ```
+
+On Windows, if the CIFS volume fails, mount the NAS on the host and use a bind-mount in `docker-compose.override.yml` (see README for example).
 
 **Ollama model not loading?**
 ```bash

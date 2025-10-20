@@ -18,7 +18,7 @@ services:
     command:
       - |
         ollama serve &
-        sleep 5
+        sleep 10
         ollama pull llama3.1:8b
         wait
 

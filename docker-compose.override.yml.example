@@ -6,6 +6,10 @@ services:
     # Enable hot reload for development
     volumes:
       - ./backend:/app
+      # If you mounted the NAS on the host (e.g., Windows), bind-mount the host path into the container:
+      # - /path/on/host/docs:/docs:ro
+      # If you use a host bind mount, set DOCS_DIR and DATA_DIR environment variables in your .env or override file
+      # to match the container paths, e.g. DOCS_DIR=/docs, DATA_DIR=/data
     environment:
       - DEBUG=true
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload

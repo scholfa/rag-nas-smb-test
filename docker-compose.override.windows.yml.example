@@ -1,0 +1,24 @@
+# Example Docker Compose override for Windows hosts
+# Copy to docker-compose.override.yml and edit paths as needed
+
+services:
+  backend:
+    # Bind-mount a host-mounted NAS folder into the container at /docs (read-only)
+    volumes:
+      - C:/path/to/host/mounted/docs:/docs:ro
+      - ./vectorstore:/data
+    environment:
+      - DEBUG=true
+      - DOCS_DIR=/docs
+      - DATA_DIR=/data
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    volumes:
+      - ./frontend:/app
+    environment:
+      - GRADIO_DEBUG=true
+
+# Notes:
+# - Replace C:/path/to/host/mounted/docs with the actual host path where you mounted the NAS share
+# - Use forward slashes or escaped backslashes for the host path in compose files
