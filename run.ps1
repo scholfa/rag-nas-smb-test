@@ -9,7 +9,7 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
 
 # If example override exists and no override file present, copy it
-if (Test-Path docker-compose.override.yml.example -PathType Leaf -and -not (Test-Path docker-compose.override.yml)) {
+if ((Test-Path -Path 'docker-compose.override.yml.example' -PathType Leaf) -and -not (Test-Path -Path 'docker-compose.override.yml')) {
     Write-Output "Using example override file -> docker-compose.override.yml"
     Copy-Item -Path docker-compose.override.yml.example -Destination docker-compose.override.yml
 }
