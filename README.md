@@ -48,9 +48,7 @@ Platform notes and OS-specific dependencies
 - Windows (Docker Desktop)
    - Docker Desktop (WSL2 backend recommended) — provides Docker Engine and Compose
    - Recommended: mount the SMB share on the Windows host (map network drive or `net use`) and bind-mount that host path into the container. Docker's CIFS local driver options in `docker-compose.yml` are not reliable on Windows.
-   - Use `.
-un.ps1` and `.
-un.ps1 -Detach` to start services, and `.
+   - Use `.run.ps1` and `.run.ps1 -Detach` to start services, and `.
       health-check.ps1` to verify
    - Run PowerShell as Administrator when creating mounts or when Docker Desktop requires elevated permissions for bind mounts
 

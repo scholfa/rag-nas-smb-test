@@ -14,6 +14,7 @@ from docx import Document
 import pandas as pd
 import xml.etree.ElementTree as ET
 import threading
+import logging
 
 app = FastAPI(title="RAG Backend API")
 
@@ -25,6 +26,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# configure logger
+logger = logging.getLogger("rag_backend")
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO)
+logger.setLevel(logging.INFO)
 
 # Configuration
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
@@ -190,6 +197,7 @@ async def ingest_upload(files: List[UploadFile] = File(...)):
     
     for file in files:
         try:
+            logger.info("Start processing upload file: %s", file.filename)
             content = await file.read()
             text = extract_text_from_file(file.filename, content)
             chunks = chunk_text(text)
@@ -216,7 +224,9 @@ async def ingest_upload(files: List[UploadFile] = File(...)):
                 "chunks": len(chunks),
                 "status": "success"
             })
+            logger.info("Finished processing upload file: %s (chunks=%d)", file.filename, len(chunks))
         except Exception as e:
+            logger.exception("Error processing upload file: %s", file.filename)
             errors.append({
                 "filename": file.filename,
                 "error": str(e)
@@ -243,6 +253,7 @@ async def ingest_nas(background_tasks: BackgroundTasks):
         for file_path in DOCS_DIR.rglob("*"):
             if file_path.is_file() and file_path.suffix.lower() in supported_extensions:
                 try:
+                    logger.info("Start processing NAS file: %s", file_path)
                     with open(file_path, "rb") as f:
                         content = f.read()
                     
@@ -268,12 +279,16 @@ async def ingest_nas(background_tasks: BackgroundTasks):
                         )
                     
                     processed.append(file_path.name)
+                    logger.info("Finished processing NAS file: %s (chunks=%d)", file_path, len(chunks))
                 except Exception as e:
+                    logger.exception("Error processing NAS file: %s", file_path)
                     errors.append({"file": str(file_path), "error": str(e)})
         
+        logger.info("NAS ingestion completed. processed=%d errors=%d", len(processed), len(errors))
         return {"processed": len(processed), "errors": len(errors)}
     
     background_tasks.add_task(process_nas_documents)
+    logger.info("NAS document ingestion started in background")
     return {"status": "started", "message": "NAS document ingestion started in background"}
 
 

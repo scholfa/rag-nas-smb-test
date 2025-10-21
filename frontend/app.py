@@ -27,7 +27,7 @@ async def upload_documents(files):
         return "❌ No files selected"
     
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=600.0) as client:
             # Process files one at a time to avoid memory issues
             all_processed = []
             all_errors = []
@@ -92,7 +92,7 @@ async def query_documents(query: str, top_k: int):
         return "❌ Please enter a question", ""
     
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=600.0) as client:
             response = await client.post(
                 f"{BACKEND_URL}/query",
                 json={"query": query, "top_k": top_k}
