@@ -86,7 +86,7 @@ async def ingest_nas_documents():
         return f"❌ Error triggering NAS ingestion: {str(e)}"
 
 
-async def query_documents(query: str, top_k: int):
+async def query_documents(query: str, top_k: int, temperature: float, max_tokens: int):
     """Query the RAG system."""
     if not query or query.strip() == "":
         return "❌ Please enter a question", ""
@@ -95,7 +95,12 @@ async def query_documents(query: str, top_k: int):
         async with httpx.AsyncClient(timeout=600.0) as client:
             response = await client.post(
                 f"{BACKEND_URL}/query",
-                json={"query": query, "top_k": top_k}
+                json={
+                    "query": query,
+                    "top_k": top_k,
+                    "temperature": float(temperature),
+                    "max_tokens": int(max_tokens)
+                }
             )
             
             if response.status_code == 200:
@@ -195,6 +200,20 @@ with gr.Blocks(title="RAG System with NAS SMB", theme=gr.themes.Soft()) as app:
                     step=1,
                     label="Number of sources to retrieve"
                 )
+                temperature_slider = gr.Slider(
+                    minimum=0.0,
+                    maximum=1.0,
+                    value=0.0,
+                    step=0.01,
+                    label="Temperature (0=deterministic)"
+                )
+                max_tokens_slider = gr.Slider(
+                    minimum=16,
+                    maximum=1024,
+                    value=256,
+                    step=16,
+                    label="Max tokens to generate"
+                )
                 query_btn = gr.Button("🔍 Ask", variant="primary")
             
         with gr.Row():
@@ -229,7 +248,7 @@ with gr.Blocks(title="RAG System with NAS SMB", theme=gr.themes.Soft()) as app:
     # Wire up the event handlers
     upload_btn.click(fn=upload_documents, inputs=[file_upload], outputs=[upload_output])
     ingest_nas_btn.click(fn=ingest_nas_documents, inputs=[], outputs=[ingest_nas_output])
-    query_btn.click(fn=query_documents, inputs=[query_input, top_k_slider], outputs=[answer_output, sources_output])
+    query_btn.click(fn=query_documents, inputs=[query_input, top_k_slider, temperature_slider, max_tokens_slider], outputs=[answer_output, sources_output])
     health_btn.click(fn=check_backend_health, inputs=[], outputs=[health_output])
     stats_btn.click(fn=get_stats, inputs=[], outputs=[stats_output])
     clear_btn.click(fn=clear_collection, inputs=[], outputs=[clear_output])

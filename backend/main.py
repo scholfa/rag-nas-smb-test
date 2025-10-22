@@ -75,6 +75,9 @@ logger.info("Configured OLLAMA_HOST=%s model=%s timeout=%.1fs max_tokens=%d", OL
 class QueryRequest(BaseModel):
     query: str
     top_k: int = 5
+    # Optional per-request overrides for generation
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
 
 
 class QueryResponse(BaseModel):
@@ -161,7 +164,7 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]
     return chunks
 
 
-async def query_ollama(prompt: str, context: str) -> str:
+async def query_ollama(prompt: str, context: str, temperature: Optional[float] = None, max_tokens: Optional[int] = None) -> str:
     """Query Ollama LLM with context. Model, timeout, and generation options are configurable via env vars.
 
     Returns the text result as a string. Raises httpx exceptions on transport errors.
@@ -175,13 +178,14 @@ Question: {prompt}
 
 Answer:"""
 
+    # Allow per-request overrides; fallback to configured defaults
     payload = {
         "model": OLLAMA_MODEL,
         "prompt": full_prompt,
         "stream": False,
         # include generation options when supported by Ollama
-        "max_tokens": OLLAMA_MAX_TOKENS,
-        "temperature": OLLAMA_TEMPERATURE,
+        "max_tokens": int(max_tokens) if max_tokens is not None else OLLAMA_MAX_TOKENS,
+        "temperature": float(temperature) if temperature is not None else OLLAMA_TEMPERATURE,
     }
 
     start = time.monotonic()
@@ -357,7 +361,7 @@ async def query(request: QueryRequest):
 
         # Query Ollama with context — handle network/timeouts separately
         try:
-            answer = await query_ollama(request.query, context)
+            answer = await query_ollama(request.query, context, temperature=request.temperature, max_tokens=request.max_tokens)
         except httpx.TimeoutException as te:
             logger.exception("Timeout when querying Ollama: %s", te)
             raise HTTPException(status_code=504, detail="Timeout while querying LLM (Ollama)")
