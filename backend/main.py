@@ -15,6 +15,7 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 import threading
 import logging
+import time
 
 app = FastAPI(title="RAG Backend API")
 
@@ -34,10 +35,17 @@ if not logging.getLogger().handlers:
 logger.setLevel(logging.INFO)
 
 # Configuration
+# Ollama / LLM configuration (tunable via environment)
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+OLLAMA_MAX_TOKENS = int(os.getenv("OLLAMA_MAX_TOKENS", "512"))
+OLLAMA_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", "0.0"))
+OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "120.0"))
 # Allow overriding mount points for host-mounted folders (useful on Windows hosts)
-DOCS_DIR = Path(os.getenv("DOCS_DIR", "/docs"))
-DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
+# Default to repository-level `docs` and `vectorstore` so local runs behave sensibly.
+repo_root = Path(__file__).resolve().parents[1]
+DOCS_DIR = Path(os.getenv("DOCS_DIR", str(repo_root / "docs")))
+DATA_DIR = Path(os.getenv("DATA_DIR", str(repo_root / "vectorstore")))
 COLLECTION_NAME = "documents"
 
 # Initialize embedding model
@@ -57,6 +65,11 @@ collection = chroma_client.get_or_create_collection(
 
 # Thread lock for collection operations
 collection_lock = threading.Lock()
+
+# Log configured paths so failures are easier to diagnose
+logger.info("Configured DOCS_DIR=%s exists=%s", DOCS_DIR, DOCS_DIR.exists())
+logger.info("Configured DATA_DIR=%s exists=%s", DATA_DIR, DATA_DIR.exists())
+logger.info("Configured OLLAMA_HOST=%s model=%s timeout=%.1fs max_tokens=%d", OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_TIMEOUT, OLLAMA_MAX_TOKENS)
 
 
 class QueryRequest(BaseModel):
@@ -149,7 +162,10 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]
 
 
 async def query_ollama(prompt: str, context: str) -> str:
-    """Query Ollama LLM with context."""
+    """Query Ollama LLM with context. Model, timeout, and generation options are configurable via env vars.
+
+    Returns the text result as a string. Raises httpx exceptions on transport errors.
+    """
     full_prompt = f"""Based on the following context, answer the question.
 
 Context:
@@ -158,18 +174,38 @@ Context:
 Question: {prompt}
 
 Answer:"""
-    
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(
-            f"{OLLAMA_HOST}/api/generate",
-            json={
-                "model": "llama3.1:8b",
-                "prompt": full_prompt,
-                "stream": False
-            }
-        )
+
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": full_prompt,
+        "stream": False,
+        # include generation options when supported by Ollama
+        "max_tokens": OLLAMA_MAX_TOKENS,
+        "temperature": OLLAMA_TEMPERATURE,
+    }
+
+    start = time.monotonic()
+    async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
+        response = await client.post(f"{OLLAMA_HOST}/api/generate", json=payload)
         response.raise_for_status()
-        return response.json()["response"]
+        elapsed = time.monotonic() - start
+        logger.info("Ollama generate finished model=%s elapsed=%.2fs status=%d", OLLAMA_MODEL, elapsed, response.status_code)
+        data = response.json()
+
+        # Robust parsing of Ollama responses
+        if isinstance(data, dict):
+            # Common shapes: {"response": "..."} or {"result": "..."} or {"choices": [{"text": "..."}]}
+            if "response" in data:
+                return data["response"]
+            if "result" in data:
+                return data["result"]
+            if "choices" in data and isinstance(data["choices"], list) and data["choices"]:
+                first = data["choices"][0]
+                if isinstance(first, dict):
+                    return first.get("text") or first.get("message") or str(first)
+
+        # Fallback: return stringified JSON
+        return str(data)
 
 
 @app.get("/")
@@ -242,7 +278,9 @@ async def ingest_upload(files: List[UploadFile] = File(...)):
 async def ingest_nas(background_tasks: BackgroundTasks):
     """Ingest all documents from NAS mount point."""
     if not DOCS_DIR.exists():
-        raise HTTPException(status_code=400, detail="NAS directory not mounted")
+        # Include the expected path in the response so callers (frontend) can see
+        # where the server is looking for the NAS mount.
+        raise HTTPException(status_code=400, detail=f"NAS directory not mounted: {DOCS_DIR}")
     
     def process_nas_documents():
         processed = []
@@ -295,38 +333,63 @@ async def ingest_nas(background_tasks: BackgroundTasks):
 @app.post("/query", response_model=QueryResponse)
 async def query(request: QueryRequest):
     """Query the RAG system."""
-    # Generate query embedding
-    query_embedding = embedding_model.encode([request.query]).tolist()[0]
-    
-    # Search in vector store
-    with collection_lock:
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=request.top_k
-        )
-    
-    if not results["documents"][0]:
-        raise HTTPException(status_code=404, detail="No relevant documents found")
-    
-    # Prepare context from retrieved documents
-    context = "\n\n".join(results["documents"][0])
-    
-    # Query Ollama with context
     try:
-        answer = await query_ollama(request.query, context)
+        # Generate query embedding
+        query_embedding = embedding_model.encode([request.query]).tolist()[0]
+
+        # Search in vector store
+        with collection_lock:
+            results = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=request.top_k
+            )
+
+        # Validate results structure safely
+        documents = results.get("documents") if isinstance(results, dict) else None
+        metadatas = results.get("metadatas") if isinstance(results, dict) else None
+
+        if not documents or not isinstance(documents, list) or not documents[0]:
+            logger.info("No relevant documents found for query: %s", request.query)
+            raise HTTPException(status_code=404, detail="No relevant documents found")
+
+        # Prepare context from retrieved documents
+        context = "\n\n".join(documents[0])
+
+        # Query Ollama with context — handle network/timeouts separately
+        try:
+            answer = await query_ollama(request.query, context)
+        except httpx.TimeoutException as te:
+            logger.exception("Timeout when querying Ollama: %s", te)
+            raise HTTPException(status_code=504, detail="Timeout while querying LLM (Ollama)")
+        except httpx.RequestError as re:
+            logger.exception("HTTP error when querying Ollama: %s", re)
+            raise HTTPException(status_code=502, detail=f"Error communicating with LLM: {str(re)}")
+
+        # Prepare sources
+        sources = []
+        # guard metadatas shape
+        meta_list = metadatas[0] if metadatas and isinstance(metadatas, list) and metadatas[0] else [{}] * len(documents[0])
+        for i, (doc, metadata) in enumerate(zip(documents[0], meta_list)):
+            try:
+                src = metadata.get("source", "unknown") if isinstance(metadata, dict) else "unknown"
+                chunk = metadata.get("chunk", 0) if isinstance(metadata, dict) else 0
+            except Exception:
+                src = "unknown"
+                chunk = 0
+
+            sources.append({
+                "source": src,
+                "chunk": chunk,
+                "preview": doc[:200] + "..." if isinstance(doc, str) and len(doc) > 200 else (doc or "")
+            })
+
+        return QueryResponse(answer=answer, sources=sources)
+    except HTTPException:
+        # Re-raise HTTPException so FastAPI handles it unchanged
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error querying Ollama: {str(e)}")
-    
-    # Prepare sources
-    sources = []
-    for i, (doc, metadata) in enumerate(zip(results["documents"][0], results["metadatas"][0])):
-        sources.append({
-            "source": metadata.get("source", "unknown"),
-            "chunk": metadata.get("chunk", 0),
-            "preview": doc[:200] + "..." if len(doc) > 200 else doc
-        })
-    
-    return QueryResponse(answer=answer, sources=sources)
+        logger.exception("Unhandled error in /query for query=%s: %s", request.query, e)
+        raise HTTPException(status_code=500, detail="Internal server error processing query")
 
 
 @app.delete("/clear")
