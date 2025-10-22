@@ -1,0 +1,54 @@
+services:
+  # Ollama LLM service (same image as main compose)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rag-ollama-host
+    env_file:
+      - .env
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        # Start Ollama and pull the configured model (OLLAMA_MODEL env may be provided by compose)
+        ollama serve &
+        sleep 10
+        : $${OLLAMA_MODEL:=llama3.1:8b}
+        echo "Pulling model $$OLLAMA_MODEL"
+        ollama pull "$$OLLAMA_MODEL"
+        wait
+
+  # Frontend UI service (Gradio)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: rag-frontend-host
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - BACKEND_URL=${BACKEND_URL:-http://host.docker.internal:8000}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
+      - GRADIO_SHARE=true
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - GRADIO_DEBUG=1
+    restart: unless-stopped
+    depends_on:
+      - ollama
+
+volumes:
+  ollama_data:
+    driver: local
+  # vectorstore left in repo to be used when running backend inside container
+  vectorstore:
+    driver: local

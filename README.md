@@ -1,3 +1,26 @@
+Alternative: host-backend compose override
+
+Standalone host-compose
+
+If you prefer a single, standalone compose file that runs only the services that should remain in Docker while the backend runs on your host, use `docker-compose.host.yml`.
+
+Start it with the helper scripts:
+
+Linux/macOS:
+
+```bash
+./run-host.sh
+```
+
+Windows (PowerShell):
+
+```powershell
+.\run-host.ps1
+# or detached
+.\run-host.ps1 -Detach
+```
+
+`docker-compose.host.yml` launches the frontend (configured to call your host backend via `host.docker.internal`) and Ollama only.
 # RAG System with NAS SMB Support
 
 A complete Retrieval-Augmented Generation (RAG) system with document ingestion from NAS via SMB, powered by FastAPI, Chroma vector database, Sentence Transformers, and Llama 3.1.
