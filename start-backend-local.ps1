@@ -42,6 +42,23 @@ if ($env:NAS_HOST -and $env:NAS_SHARE) {
     if ($env:SMB_USER -and $env:SMB_PASS) {
         # Try mapping to drive Z: for convenience if it's free
         $drive = 'Z:'
+
+        # Only attempt to remove the specific target drive (Z:) to avoid deleting other mounts
+        try {
+            if (Get-Command -Name Get-SmbMapping -ErrorAction SilentlyContinue) {
+                $existing = Get-SmbMapping -LocalPath $drive -ErrorAction SilentlyContinue
+                if ($existing) {
+                    Write-Host "Removing existing SMB mapping for $drive -> $($existing.RemotePath)"
+                    Remove-SmbMapping -LocalPath $drive -Force -ErrorAction SilentlyContinue
+                }
+            } else {
+                # Fallback: only delete Z: mapping if present
+                net use $drive /delete /yes 2>$null | Out-Null
+            }
+        } catch {
+            Write-Host "Warning: unable to pre-clear existing Z: SMB mapping: $_"
+        }
+
         if (-not (Test-Path $drive)) {
             try {
                 Write-Host "Mapping $unc to drive $drive"
@@ -49,8 +66,18 @@ if ($env:NAS_HOST -and $env:NAS_SHARE) {
                 Write-Host "Mapped $unc to $drive"
                 $env:DOCS_DIR = $drive
             } catch {
-                Write-Host "Failed to map drive $drive to $unc - falling back to UNC path: $_"
-                $env:DOCS_DIR = $unc
+                Write-Host "Failed to map drive $drive to $unc - attempt to remove any lingering session and retry: $_"
+                # Try one more time after removing any session
+                try {
+                    net use $unc /delete /yes 2>$null | Out-Null
+                    net use $drive /delete /yes 2>$null | Out-Null
+                    net use $drive $unc /user:$env:SMB_USER $env:SMB_PASS /persistent:no | Out-Null
+                    Write-Host "Mapped $unc to $drive on retry"
+                    $env:DOCS_DIR = $drive
+                } catch {
+                    Write-Host "Retry failed - falling back to UNC path: $_"
+                    $env:DOCS_DIR = $unc
+                }
             }
         } else {
             Write-Host "$drive already in use - using UNC path $unc"
