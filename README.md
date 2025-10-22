@@ -70,9 +70,12 @@ Platform notes and OS-specific dependencies
 
 - Windows (Docker Desktop)
    - Docker Desktop (WSL2 backend recommended) — provides Docker Engine and Compose
-   - Recommended: mount the SMB share on the Windows host (map network drive or `net use`) and bind-mount that host path into the container. Docker's CIFS local driver options in `docker-compose.yml` are not reliable on Windows.
-   - Use `.run.ps1` and `.run.ps1 -Detach` to start services, and `.
-      health-check.ps1` to verify
+   - Recommended: mount the SMB share on the Windows host (map a network drive or use `net use`) and bind-mount that host path into the container. Docker's CIFS local driver options in `docker-compose.yml` are not reliable on Windows.
+   - The start script no longer attempts to map a specific drive letter (like Z:). It will set `DOCS_DIR` to UNC paths (or a semicolon-separated list of UNC paths) which the backend parses into `DOCS_DIRS`.
+   - Use `.
+      run.ps1` and `.
+      run.ps1 -Detach` to start services, and `.
+      health-check.ps1` to verify.
    - Run PowerShell as Administrator when creating mounts or when Docker Desktop requires elevated permissions for bind mounts
 
 ### Setup
@@ -88,12 +91,14 @@ Platform notes and OS-specific dependencies
    cp .env.example .env
    ```
    
-   Edit `.env` with your NAS credentials:
+   Edit `.env` with your NAS credentials. The `DOCS_DIR` environment variable supports multiple document roots by separating entries with `;`, `,` or `|` (the backend parses this into `DOCS_DIRS`):
    ```bash
    NAS_HOST=192.168.1.100          # Your NAS IP or hostname
-   NAS_SHARE=documents             # Your SMB share name
+   NAS_SHARE=documents             # Your SMB share name (or multiple shares: "shareA;shareB")
    SMB_USER=your-username          # SMB username
    SMB_PASS=your-password          # SMB password
+   # Alternatively you can set DOCS_DIR directly to container paths, even multiple:
+   # DOCS_DIR=/docs;/other_docs
    ```
 
 3. **Create the vectorstore directory:**
@@ -214,7 +219,7 @@ services:
          - DATA_DIR=/data
 ```
 
-If you use a host bind mount, set `DOCS_DIR` and `DATA_DIR` in your `.env` or override to match the container paths.
+If you use a host bind mount, set `DOCS_DIR` and `DATA_DIR` in your `.env` or override to match the container paths. `DOCS_DIR` may contain multiple paths separated by `;`, `,` or `|` (for example `DOCS_DIR=/docs;/other_docs`).
 
 ### Environment Variables
 

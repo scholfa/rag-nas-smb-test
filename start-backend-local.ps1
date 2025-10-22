@@ -37,55 +37,24 @@ if (Test-Path $envFile) {
 # Set sensible defaults for local backend
 # If NAS configuration is present in .env, prefer the NAS UNC path (or map a drive when credentials provided)
 if ($env:NAS_HOST -and $env:NAS_SHARE) {
-    $unc = "\\$($env:NAS_HOST)\$($env:NAS_SHARE)"
-    Write-Host "Detected NAS config. Constructed UNC path: $unc"
-    if ($env:SMB_USER -and $env:SMB_PASS) {
-        # Try mapping to drive Z: for convenience if it's free
-        $drive = 'Z:'
+    # Support multiple shares separated by comma/semicolon/pipe
+    $shares = $env:NAS_SHARE -split '[,;|]'
+    $uncs = @()
+    foreach ($s in $shares) {
+        $t = $s.Trim()
+        if ($t) { $uncs += "\\$($env:NAS_HOST)\$t" }
+    }
 
-        # Only attempt to remove the specific target drive (Z:) to avoid deleting other mounts
-        try {
-            if (Get-Command -Name Get-SmbMapping -ErrorAction SilentlyContinue) {
-                $existing = Get-SmbMapping -LocalPath $drive -ErrorAction SilentlyContinue
-                if ($existing) {
-                    Write-Host "Removing existing SMB mapping for $drive -> $($existing.RemotePath)"
-                    Remove-SmbMapping -LocalPath $drive -Force -ErrorAction SilentlyContinue
-                }
-            } else {
-                # Fallback: only delete Z: mapping if present
-                net use $drive /delete /yes 2>$null | Out-Null
-            }
-        } catch {
-            Write-Host "Warning: unable to pre-clear existing Z: SMB mapping: $_"
-        }
-
-        if (-not (Test-Path $drive)) {
-            try {
-                Write-Host "Mapping $unc to drive $drive"
-                net use $drive $unc /user:$env:SMB_USER $env:SMB_PASS /persistent:no | Out-Null
-                Write-Host "Mapped $unc to $drive"
-                $env:DOCS_DIR = $drive
-            } catch {
-                Write-Host "Failed to map drive $drive to $unc - attempt to remove any lingering session and retry: $_"
-                # Try one more time after removing any session
-                try {
-                    net use $unc /delete /yes 2>$null | Out-Null
-                    net use $drive /delete /yes 2>$null | Out-Null
-                    net use $drive $unc /user:$env:SMB_USER $env:SMB_PASS /persistent:no | Out-Null
-                    Write-Host "Mapped $unc to $drive on retry"
-                    $env:DOCS_DIR = $drive
-                } catch {
-                    Write-Host "Retry failed - falling back to UNC path: $_"
-                    $env:DOCS_DIR = $unc
-                }
-            }
-        } else {
-            Write-Host "$drive already in use - using UNC path $unc"
-            $env:DOCS_DIR = $unc
-        }
+    if ($uncs.Count -gt 1) {
+        # Multiple shares configured — set DOCS_DIR to semicolon-separated list and skip mapping
+        $joined = ($uncs -join ';')
+        Write-Host "Detected multiple NAS shares. Setting DOCS_DIR to: $joined"
+        $env:DOCS_DIR = $joined
     } else {
-        # No credentials provided - use UNC path (requires appropriate permissions)
-        Write-Host "Using UNC path for DOCS_DIR: $unc (no SMB credentials provided)"
+        # Single share configured — always use UNC path. Drive-letter mapping is disabled to avoid
+        # interfering with existing user mappings and credentials issues.
+        $unc = $uncs[0]
+        Write-Host "Detected NAS config. Using UNC path for DOCS_DIR: $unc (drive-letter mapping disabled)"
         $env:DOCS_DIR = $unc
     }
 } elseif ($env:DOCS_HOST_PATH) {

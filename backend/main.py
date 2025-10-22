@@ -2,6 +2,7 @@ import os
 import io
 from pathlib import Path
 from typing import List, Optional
+import re
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -44,7 +45,10 @@ OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "120.0"))
 # Allow overriding mount points for host-mounted folders (useful on Windows hosts)
 # Default to repository-level `docs` and `vectorstore` so local runs behave sensibly.
 repo_root = Path(__file__).resolve().parents[1]
-DOCS_DIR = Path(os.getenv("DOCS_DIR", str(repo_root / "docs")))
+# The environment variable DOCS_DIR may contain multiple paths separated by ';', ',' or '|'.
+# We parse it into DOCS_DIRS (list[Path]) and use DOCS_DIRS throughout the code.
+raw_docs = os.getenv("DOCS_DIR", str(repo_root / "docs"))
+DOCS_DIRS = [Path(p.strip()) for p in re.split(r"[,;|]", raw_docs) if p.strip()]
 DATA_DIR = Path(os.getenv("DATA_DIR", str(repo_root / "vectorstore")))
 COLLECTION_NAME = "documents"
 
@@ -67,7 +71,8 @@ collection = chroma_client.get_or_create_collection(
 collection_lock = threading.Lock()
 
 # Log configured paths so failures are easier to diagnose
-logger.info("Configured DOCS_DIR=%s exists=%s", DOCS_DIR, DOCS_DIR.exists())
+for d in DOCS_DIRS:
+    logger.info("Configured docs entry=%s exists=%s", d, d.exists())
 logger.info("Configured DATA_DIR=%s exists=%s", DATA_DIR, DATA_DIR.exists())
 logger.info("Configured OLLAMA_HOST=%s model=%s timeout=%.1fs max_tokens=%d", OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_TIMEOUT, OLLAMA_MAX_TOKENS)
 
@@ -234,57 +239,55 @@ async def health():
 
 @app.post("/ingest/nas")
 async def ingest_nas(background_tasks: BackgroundTasks):
-    """Ingest all documents from NAS mount point."""
-    if not DOCS_DIR.exists():
-        # Include the expected path in the response so callers (frontend) can see
-        # where the server is looking for the NAS mount.
-        raise HTTPException(status_code=400, detail=f"NAS directory not mounted: {DOCS_DIR}")
-    
+    """Ingest all documents from NAS mount points (supports multiple configured DOCS_DIRs)."""
+    # Find which configured docs roots actually exist
+    existing_dirs = [d for d in DOCS_DIRS if d.exists()]
+    if not existing_dirs:
+        raise HTTPException(status_code=400, detail=f"None of the configured NAS directories are mounted: {DOCS_DIRS}")
+
     def process_nas_documents():
         processed = []
         errors = []
-        
+
         supported_extensions = [".pdf", ".docx", ".xlsx", ".csv", ".md", ".txt", ".drawio"]
-        
-        for file_path in DOCS_DIR.rglob("*"):
-            if file_path.is_file() and file_path.suffix.lower() in supported_extensions:
-                try:
-                    logger.info("Start processing NAS file: %s", file_path)
-                    with open(file_path, "rb") as f:
-                        content = f.read()
-                    
-                    text = extract_text_from_file(file_path.name, content)
-                    chunks = chunk_text(text)
-                    
-                    # Generate embeddings
-                    embeddings = embedding_model.encode(chunks).tolist()
-                    
-                    # Add to collection with unique IDs using full path
-                    import time
-                    timestamp = int(time.time() * 1000000)  # microseconds for uniqueness
-                    relative_path = str(file_path.relative_to(DOCS_DIR))
-                    ids = [f"{relative_path}_{timestamp}_{i}" for i in range(len(chunks))]
-                    # For NAS files, store the relative path as 'source' and the full path as 'path'
-                    rel = str(file_path.relative_to(DOCS_DIR))
-                    metadatas = [{"source": rel, "path": str(file_path), "chunk": i} for i in range(len(chunks))]
-                    
-                    with collection_lock:
-                        collection.add(
-                            embeddings=embeddings,
-                            documents=chunks,
-                            metadatas=metadatas,
-                            ids=ids
-                        )
-                    
-                    processed.append(file_path.name)
-                    logger.info("Finished processing NAS file: %s (chunks=%d)", file_path, len(chunks))
-                except Exception as e:
-                    logger.exception("Error processing NAS file: %s", file_path)
-                    errors.append({"file": str(file_path), "error": str(e)})
-        
+
+        for docs_root in existing_dirs:
+            for file_path in docs_root.rglob("*"):
+                if file_path.is_file() and file_path.suffix.lower() in supported_extensions:
+                    try:
+                        logger.info("Start processing NAS file: %s", file_path)
+                        with open(file_path, "rb") as f:
+                            content = f.read()
+
+                        text = extract_text_from_file(file_path.name, content)
+                        chunks = chunk_text(text)
+
+                        # Generate embeddings
+                        embeddings = embedding_model.encode(chunks).tolist()
+
+                        # Add to collection with unique IDs using path relative to the docs_root
+                        timestamp = int(time.time() * 1000000)  # microseconds for uniqueness
+                        relative_path = str(file_path.relative_to(docs_root))
+                        ids = [f"{relative_path}_{timestamp}_{i}" for i in range(len(chunks))]
+                        metadatas = [{"source": relative_path, "path": str(file_path), "chunk": i} for i in range(len(chunks))]
+
+                        with collection_lock:
+                            collection.add(
+                                embeddings=embeddings,
+                                documents=chunks,
+                                metadatas=metadatas,
+                                ids=ids
+                            )
+
+                        processed.append(file_path.name)
+                        logger.info("Finished processing NAS file: %s (chunks=%d)", file_path, len(chunks))
+                    except Exception as e:
+                        logger.exception("Error processing NAS file: %s", file_path)
+                        errors.append({"file": str(file_path), "error": str(e)})
+
         logger.info("NAS ingestion completed. processed=%d errors=%d", len(processed), len(errors))
         return {"processed": len(processed), "errors": len(errors)}
-    
+
     background_tasks.add_task(process_nas_documents)
     logger.info("NAS document ingestion started in background")
     return {"status": "started", "message": "NAS document ingestion started in background"}

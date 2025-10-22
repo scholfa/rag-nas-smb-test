@@ -8,9 +8,11 @@
 Platform notes
 
 - Linux / macOS / WSL2: `./run.sh` and `./health-check.sh` are provided. You can use the CIFS volume in `docker-compose.yml` or mount the NAS on the host and bind-mount into the container.
-- Windows (Docker Desktop): use `.
-un.ps1` and `.
-un.ps1 -Detach`. For SMB shares, mount the NAS on the Windows host (map a network drive or `net use`) and bind-mount that host path into the container via `docker-compose.override.yml`.
+ - Windows (Docker Desktop): use `.
+run.ps1` and `.
+run.ps1 -Detach`. For SMB shares, mount the NAS on the Windows host (map a network drive or `net use`) and bind-mount that host path into the container via `docker-compose.override.yml`.
+
+   Note: the start script no longer attempts to map a fixed drive letter (e.g. Z:). It will set `DOCS_DIR` to the UNC path (or multiple UNC paths) and the backend will parse `DOCS_DIR` into `DOCS_DIRS`.
 
 ## Setup (5 minutes)
 
@@ -118,9 +120,20 @@ rm -rf vectorstore
 Required in `.env`:
 ```bash
 NAS_HOST=192.168.1.100    # Your NAS IP or hostname
-NAS_SHARE=documents       # SMB share name
+NAS_SHARE=documents       # SMB share name (or multiple shares: "shareA;shareB")
 SMB_USER=username         # SMB username
 SMB_PASS=password         # SMB password
+```
+
+Notes:
+- You can also set `DOCS_DIR` directly to container/host paths. `DOCS_DIR` supports multiple paths separated by `;`, `,` or `|`. Example:
+
+```bash
+# Single path
+DOCS_DIR=/docs
+
+# Multiple paths
+DOCS_DIR=/docs;/other_docs
 ```
 
 ## Supported File Formats
