@@ -2,7 +2,7 @@ import os
 import io
 from pathlib import Path
 from typing import List, Optional
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import chromadb
@@ -229,53 +229,7 @@ async def health():
     }
 
 
-@app.post("/ingest/upload")
-async def ingest_upload(files: List[UploadFile] = File(...)):
-    """Ingest uploaded documents into the vector store."""
-    processed = []
-    errors = []
-    
-    for file in files:
-        try:
-            logger.info("Start processing upload file: %s", file.filename)
-            content = await file.read()
-            text = extract_text_from_file(file.filename, content)
-            chunks = chunk_text(text)
-            
-            # Generate embeddings
-            embeddings = embedding_model.encode(chunks).tolist()
-            
-            # Add to collection with unique IDs using timestamp
-            import time
-            timestamp = int(time.time() * 1000000)  # microseconds for uniqueness
-            ids = [f"{file.filename}_{timestamp}_{i}" for i in range(len(chunks))]
-            metadatas = [{"source": file.filename, "chunk": i} for i in range(len(chunks))]
-            
-            with collection_lock:
-                collection.add(
-                    embeddings=embeddings,
-                    documents=chunks,
-                    metadatas=metadatas,
-                    ids=ids
-                )
-            
-            processed.append({
-                "filename": file.filename,
-                "chunks": len(chunks),
-                "status": "success"
-            })
-            logger.info("Finished processing upload file: %s (chunks=%d)", file.filename, len(chunks))
-        except Exception as e:
-            logger.exception("Error processing upload file: %s", file.filename)
-            errors.append({
-                "filename": file.filename,
-                "error": str(e)
-            })
-    
-    return {
-        "processed": processed,
-        "errors": errors
-    }
+
 
 
 @app.post("/ingest/nas")
@@ -310,7 +264,9 @@ async def ingest_nas(background_tasks: BackgroundTasks):
                     timestamp = int(time.time() * 1000000)  # microseconds for uniqueness
                     relative_path = str(file_path.relative_to(DOCS_DIR))
                     ids = [f"{relative_path}_{timestamp}_{i}" for i in range(len(chunks))]
-                    metadatas = [{"source": str(file_path.relative_to(DOCS_DIR)), "chunk": i} for i in range(len(chunks))]
+                    # For NAS files, store the relative path as 'source' and the full path as 'path'
+                    rel = str(file_path.relative_to(DOCS_DIR))
+                    metadatas = [{"source": rel, "path": str(file_path), "chunk": i} for i in range(len(chunks))]
                     
                     with collection_lock:
                         collection.add(
@@ -376,13 +332,16 @@ async def query(request: QueryRequest):
         for i, (doc, metadata) in enumerate(zip(documents[0], meta_list)):
             try:
                 src = metadata.get("source", "unknown") if isinstance(metadata, dict) else "unknown"
+                path = metadata.get("path", src) if isinstance(metadata, dict) else src
                 chunk = metadata.get("chunk", 0) if isinstance(metadata, dict) else 0
             except Exception:
                 src = "unknown"
+                path = "unknown"
                 chunk = 0
 
             sources.append({
                 "source": src,
+                "path": path,
                 "chunk": chunk,
                 "preview": doc[:200] + "..." if isinstance(doc, str) and len(doc) > 200 else (doc or "")
             })

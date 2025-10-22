@@ -21,54 +21,7 @@ async def check_backend_health():
         return f"❌ Backend connection error: {str(e)}"
 
 
-async def upload_documents(files):
-    """Upload documents to the backend for ingestion."""
-    if not files:
-        return "❌ No files selected"
-    
-    try:
-        async with httpx.AsyncClient(timeout=600.0) as client:
-            # Process files one at a time to avoid memory issues
-            all_processed = []
-            all_errors = []
-            
-            for file in files:
-                try:
-                    with open(file.name, "rb") as f:
-                        file_data = [("files", (os.path.basename(file.name), f.read()))]
-                    
-                    response = await client.post(
-                        f"{BACKEND_URL}/ingest/upload",
-                        files=file_data
-                    )
-                    
-                    if response.status_code == 200:
-                        data = response.json()
-                        all_processed.extend(data.get("processed", []))
-                        all_errors.extend(data.get("errors", []))
-                    else:
-                        all_errors.append({
-                            "filename": os.path.basename(file.name),
-                            "error": f"Upload failed: {response.text}"
-                        })
-                except Exception as e:
-                    all_errors.append({
-                        "filename": os.path.basename(file.name),
-                        "error": str(e)
-                    })
-            
-            result = f"✅ Successfully processed {len(all_processed)} files\n\n"
-            for item in all_processed:
-                result += f"- {item['filename']}: {item['chunks']} chunks\n"
-            
-            if all_errors:
-                result += f"\n❌ {len(all_errors)} errors:\n"
-                for error in all_errors:
-                    result += f"- {error['filename']}: {error['error']}\n"
-            
-            return result
-    except Exception as e:
-        return f"❌ Error uploading files: {str(e)}"
+# upload_documents removed — ingestion is only supported from NAS
 
 
 async def ingest_nas_documents():
@@ -160,20 +113,6 @@ with gr.Blocks(title="RAG System with NAS SMB", theme=gr.themes.Soft()) as app:
     gr.Markdown("Upload documents or ingest from NAS, then query using natural language powered by Llama 3.1")
     
     with gr.Tab("📤 Document Management"):
-        gr.Markdown("### Upload Documents")
-        gr.Markdown("Supported formats: `.pdf`, `.docx`, `.xlsx`, `.csv`, `.md`, `.txt`, `.drawio`")
-        
-        with gr.Row():
-            with gr.Column():
-                file_upload = gr.File(
-                    label="Select files to upload",
-                    file_count="multiple",
-                    file_types=[".pdf", ".docx", ".xlsx", ".csv", ".md", ".txt", ".drawio"]
-                )
-                upload_btn = gr.Button("📤 Upload and Process", variant="primary")
-                upload_output = gr.Textbox(label="Upload Status", lines=10)
-        
-        gr.Markdown("---")
         gr.Markdown("### Ingest from NAS")
         gr.Markdown("Process all documents from the mounted NAS share at `/docs`")
         
@@ -246,7 +185,6 @@ with gr.Blocks(title="RAG System with NAS SMB", theme=gr.themes.Soft()) as app:
                 clear_output = gr.Textbox(label="Clear Status", lines=2)
     
     # Wire up the event handlers
-    upload_btn.click(fn=upload_documents, inputs=[file_upload], outputs=[upload_output])
     ingest_nas_btn.click(fn=ingest_nas_documents, inputs=[], outputs=[ingest_nas_output])
     query_btn.click(fn=query_documents, inputs=[query_input, top_k_slider, temperature_slider, max_tokens_slider], outputs=[answer_output, sources_output])
     health_btn.click(fn=check_backend_health, inputs=[], outputs=[health_output])

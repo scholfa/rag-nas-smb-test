@@ -51,14 +51,9 @@ mkdir .\vectorstore
 
 ## First Use
 
-1. **Upload Documents**
+1. **Ingest from NAS**
    - Go to "Document Management" tab
-   - Click "Select files" and choose your documents
-   - Click "Upload and Process"
-
-2. **Or Ingest from NAS**
-   - Click "Ingest NAS Documents"
-   - All documents from your NAS share will be processed
+   - Click "Ingest NAS Documents" to process all files from your NAS share
 
 3. **Ask Questions**
    - Go to "Query" tab

@@ -136,9 +136,8 @@ Windows (PowerShell):
 
 1. Open http://localhost:3000 in your browser
 
-2. **Upload Documents** tab:
-   - Upload individual files using the file selector
-   - Or click "Ingest NAS Documents" to process all files from your NAS
+2. **Ingest Documents**:
+   - The system ingests documents from your mounted NAS share. Use the "Ingest NAS Documents" action in the UI to process files from the NAS mount.
 
 3. **Query** tab:
    - Enter your question in natural language
@@ -152,11 +151,9 @@ Windows (PowerShell):
 
 ### Via API
 
-#### Upload Documents
+#### Ingest from NAS
 ```bash
-curl -X POST "http://localhost:8000/ingest/upload" \
-  -F "files=@document.pdf" \
-  -F "files=@spreadsheet.xlsx"
+curl -X POST "http://localhost:8000/ingest/nas"
 ```
 
 #### Ingest from NAS
@@ -332,7 +329,7 @@ Interactive API documentation is available at:
 |--------|----------|-------------|
 | GET | `/` | Health check |
 | GET | `/health` | Detailed health status |
-| POST | `/ingest/upload` | Upload and ingest documents |
+| POST | `/ingest/nas` | Ingest documents from NAS |
 | POST | `/ingest/nas` | Ingest documents from NAS |
 | POST | `/query` | Query the RAG system |
 | GET | `/stats` | Get indexing statistics |
