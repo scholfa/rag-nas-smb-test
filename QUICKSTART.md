@@ -57,6 +57,28 @@ mkdir .\vectorstore
    - Go to "Document Management" tab
    - Click "Ingest NAS Documents" to process all files from your NAS share
 
+### Ingest lifecycle (start / status / abort)
+
+The backend runs ingestion as a background, cancellable task. When you start ingestion the API returns a `task_id`.
+
+Start ingestion (returns `task_id`):
+
+```bash
+curl -s -X POST "http://localhost:8000/ingest/nas" | jq
+```
+
+Check status:
+
+```bash
+curl "http://localhost:8000/ingest/nas/status?task_id=<TASK_ID>" | jq
+```
+
+Abort ingestion:
+
+```bash
+curl -X POST "http://localhost:8000/ingest/nas/abort?task_id=<TASK_ID>"
+```
+
 3. **Ask Questions**
    - Go to "Query" tab
    - Type your question
@@ -134,6 +156,8 @@ DOCS_DIR=/docs
 
 # Multiple paths
 DOCS_DIR=/docs;/other_docs
+
+When using multiple NAS shares, `DOCS_DIR` may be set to multiple UNC paths (Windows) or multiple host paths (Linux/WSL2). The backend will parse `DOCS_DIR` into `DOCS_DIRS` and ingest from any configured root that exists at startup.
 ```
 
 ## Supported File Formats

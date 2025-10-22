@@ -161,9 +161,21 @@ Windows (PowerShell):
 curl -X POST "http://localhost:8000/ingest/nas"
 ```
 
-#### Ingest from NAS
+The ingest endpoint starts a background, cancellable ingestion. It returns a JSON object containing a `task_id` you can use to check status or abort the run.
+
+Example (start ingestion):
 ```bash
-curl -X POST "http://localhost:8000/ingest/nas"
+curl -s -X POST "http://localhost:8000/ingest/nas" -H "Content-Type: application/json" | jq
+```
+
+Example (check status):
+```bash
+curl "http://localhost:8000/ingest/nas/status?task_id=<TASK_ID>" | jq
+```
+
+Example (abort):
+```bash
+curl -X POST "http://localhost:8000/ingest/nas/abort?task_id=<TASK_ID>"
 ```
 
 #### Query Documents
@@ -174,6 +186,26 @@ curl -X POST "http://localhost:8000/query" \
     "query": "What are the key findings?",
     "top_k": 5
   }'
+```
+
+The query endpoint accepts optional per-request generation overrides and a `request_id` that enables client-side aborts. Example with generation options and request id:
+
+```bash
+curl -X POST "http://localhost:8000/query" \
+   -H "Content-Type: application/json" \
+   -d '{
+      "query": "What are the key findings?",
+      "top_k": 5,
+      "temperature": 0.0,
+      "max_tokens": 256,
+      "request_id": "my-optional-id-123"
+   }'
+```
+
+To abort a running query (use the same `request_id` you supplied):
+
+```bash
+curl -X POST "http://localhost:8000/query/abort?request_id=my-optional-id-123"
 ```
 
 #### Get Statistics
@@ -225,6 +257,10 @@ If you use a host bind mount, set `DOCS_DIR` and `DATA_DIR` in your `.env` or ov
 
 Backend service:
 - `OLLAMA_HOST`: Ollama service URL (default: `http://ollama:11434`)
+- `OLLAMA_MODEL`: Default model to ask Ollama to use (example: `llama3.1:8b`)
+- `OLLAMA_MAX_TOKENS`: Default max tokens for generation (integer)
+- `OLLAMA_TEMPERATURE`: Default temperature (float)
+- `OLLAMA_TIMEOUT`: Ollama request timeout in seconds (float)
 
 Frontend service:
 - `BACKEND_URL`: Backend API URL (default: `http://backend:8000`)

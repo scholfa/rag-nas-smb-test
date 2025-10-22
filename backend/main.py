@@ -1,7 +1,9 @@
 import os
 import io
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict
+import uuid
+import asyncio
 import re
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,6 +11,12 @@ from pydantic import BaseModel
 import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
+# Prefer GPU when available via PyTorch; SentenceTransformer accepts a device param.
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except Exception:
+    TORCH_AVAILABLE = False
 import httpx
 from pypdf import PdfReader
 from docx import Document
@@ -53,7 +61,15 @@ DATA_DIR = Path(os.getenv("DATA_DIR", str(repo_root / "vectorstore")))
 COLLECTION_NAME = "documents"
 
 # Initialize embedding model
-embedding_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+device = "cpu"
+if TORCH_AVAILABLE:
+    try:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        device = "cpu"
+
+logger.info("Initializing SentenceTransformer on device=%s (torch_available=%s)", device, TORCH_AVAILABLE)
+embedding_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', device=device)
 
 # Initialize Chroma client
 chroma_client = chromadb.PersistentClient(
@@ -70,6 +86,12 @@ collection = chroma_client.get_or_create_collection(
 # Thread lock for collection operations
 collection_lock = threading.Lock()
 
+# Task registries for cancellable operations
+# ingest_tasks: task_id -> {thread, stop_event, status, result}
+ingest_tasks: Dict[str, Dict] = {}
+# query_tasks: request_id -> asyncio.Task
+query_tasks: Dict[str, asyncio.Task] = {}
+
 # Log configured paths so failures are easier to diagnose
 for d in DOCS_DIRS:
     logger.info("Configured docs entry=%s exists=%s", d, d.exists())
@@ -83,6 +105,8 @@ class QueryRequest(BaseModel):
     # Optional per-request overrides for generation
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
+    # Optional client-provided id so frontend can abort
+    request_id: Optional[str] = None
 
 
 class QueryResponse(BaseModel):
@@ -238,28 +262,45 @@ async def health():
 
 
 @app.post("/ingest/nas")
-async def ingest_nas(background_tasks: BackgroundTasks):
-    """Ingest all documents from NAS mount points (supports multiple configured DOCS_DIRs)."""
+async def ingest_nas():
+    """Start a cancellable ingestion of documents from configured NAS mount points.
+    Returns a task_id which can be used to abort or query status.
+    """
     # Find which configured docs roots actually exist
     existing_dirs = [d for d in DOCS_DIRS if d.exists()]
     if not existing_dirs:
         raise HTTPException(status_code=400, detail=f"None of the configured NAS directories are mounted: {DOCS_DIRS}")
 
-    def process_nas_documents():
+    task_id = str(uuid.uuid4())
+    stop_event = threading.Event()
+
+    def process_nas_documents(stop_event: threading.Event, task_id: str = task_id):
         processed = []
         errors = []
 
         supported_extensions = [".pdf", ".docx", ".xlsx", ".csv", ".md", ".txt", ".drawio"]
 
         for docs_root in existing_dirs:
+            if stop_event.is_set():
+                logger.info("Ingest task %s aborted before processing %s", task_id, docs_root)
+                break
+
             for file_path in docs_root.rglob("*"):
+                if stop_event.is_set():
+                    logger.info("Ingest task %s abort requested, stopping", task_id)
+                    break
+
                 if file_path.is_file() and file_path.suffix.lower() in supported_extensions:
                     try:
-                        logger.info("Start processing NAS file: %s", file_path)
+                        logger.info("Start processing NAS file: %s (task=%s)", file_path, task_id)
                         with open(file_path, "rb") as f:
                             content = f.read()
 
                         text = extract_text_from_file(file_path.name, content)
+                        if stop_event.is_set():
+                            logger.info("Ingest task %s stopping during chunking", task_id)
+                            break
+
                         chunks = chunk_text(text)
 
                         # Generate embeddings
@@ -280,22 +321,56 @@ async def ingest_nas(background_tasks: BackgroundTasks):
                             )
 
                         processed.append(file_path.name)
-                        logger.info("Finished processing NAS file: %s (chunks=%d)", file_path, len(chunks))
+                        logger.info("Finished processing NAS file: %s (chunks=%d) (task=%s)", file_path, len(chunks), task_id)
                     except Exception as e:
-                        logger.exception("Error processing NAS file: %s", file_path)
+                        logger.exception("Error processing NAS file: %s (task=%s)", file_path, task_id)
                         errors.append({"file": str(file_path), "error": str(e)})
 
-        logger.info("NAS ingestion completed. processed=%d errors=%d", len(processed), len(errors))
-        return {"processed": len(processed), "errors": len(errors)}
+        ingest_tasks.get(task_id, {}).update({"status": "stopped"})
+        logger.info("NAS ingestion completed for task=%s. processed=%d errors=%d", task_id, len(processed), len(errors))
+        ingest_tasks.get(task_id, {}).update({"result": {"processed": len(processed), "errors": len(errors)}})
 
-    background_tasks.add_task(process_nas_documents)
-    logger.info("NAS document ingestion started in background")
-    return {"status": "started", "message": "NAS document ingestion started in background"}
+    thread = threading.Thread(target=process_nas_documents, args=(stop_event,), daemon=True)
+    ingest_tasks[task_id] = {"thread": thread, "stop_event": stop_event, "status": "running"}
+    thread.start()
+
+    logger.info("NAS document ingestion started in background (task_id=%s)", task_id)
+    return {"status": "started", "task_id": task_id}
+
+
+@app.post("/ingest/nas/abort")
+async def abort_ingest(task_id: str):
+    """Abort a running ingest task by task_id."""
+    info = ingest_tasks.get(task_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Ingest task not found")
+    if info.get("status") != "running":
+        return {"status": "not-running", "task_id": task_id}
+
+    info["stop_event"].set()
+    thread = info.get("thread")
+    thread.join(timeout=5)
+    info["status"] = "aborted"
+    logger.info("Ingest task %s aborted", task_id)
+    return {"status": "aborted", "task_id": task_id}
+
+
+@app.get("/ingest/nas/status")
+async def ingest_status(task_id: str):
+    info = ingest_tasks.get(task_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Ingest task not found")
+    return {"task_id": task_id, "status": info.get("status"), "result": info.get("result")}
 
 
 @app.post("/query", response_model=QueryResponse)
 async def query(request: QueryRequest):
-    """Query the RAG system."""
+    """Query the RAG system. Supports client-provided request_id so queries can be aborted via /query/abort.
+    If no request_id is provided one will be generated for internal tracking only.
+    """
+    # Assign or generate a request id for cancellation
+    req_id = request.request_id or str(uuid.uuid4())
+
     try:
         # Generate query embedding
         query_embedding = embedding_model.encode([request.query]).tolist()[0]
@@ -318,15 +393,26 @@ async def query(request: QueryRequest):
         # Prepare context from retrieved documents
         context = "\n\n".join(documents[0])
 
-        # Query Ollama with context — handle network/timeouts separately
+        # Create an asyncio task to call the LLM so it can be cancelled by request_id
+        llm_task = asyncio.create_task(
+            query_ollama(request.query, context, temperature=request.temperature, max_tokens=request.max_tokens)
+        )
+        query_tasks[req_id] = llm_task
+
         try:
-            answer = await query_ollama(request.query, context, temperature=request.temperature, max_tokens=request.max_tokens)
+            answer = await llm_task
+        except asyncio.CancelledError:
+            logger.info("Query task %s cancelled by client", req_id)
+            raise HTTPException(status_code=499, detail="Query aborted by client")
         except httpx.TimeoutException as te:
             logger.exception("Timeout when querying Ollama: %s", te)
             raise HTTPException(status_code=504, detail="Timeout while querying LLM (Ollama)")
         except httpx.RequestError as re:
             logger.exception("HTTP error when querying Ollama: %s", re)
             raise HTTPException(status_code=502, detail=f"Error communicating with LLM: {str(re)}")
+        finally:
+            # Clean up task registry
+            query_tasks.pop(req_id, None)
 
         # Prepare sources
         sources = []
@@ -380,3 +466,25 @@ async def get_stats():
         "total_chunks": count,
         "collection_name": COLLECTION_NAME
     }
+
+
+@app.post("/query/abort")
+async def abort_query(request_id: str):
+    """Abort a running query identified by request_id. Returns 404 if not found."""
+    task = query_tasks.get(request_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Query task not found")
+
+    task.cancel()
+    # Give a small grace period for cancellation
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=3.0)
+    except asyncio.TimeoutError:
+        logger.info("Timed out waiting for query task %s to cancel", request_id)
+    except Exception:
+        # Task may raise CancelledError which is okay
+        pass
+
+    query_tasks.pop(request_id, None)
+    logger.info("Query task %s cancelled", request_id)
+    return {"status": "cancelled", "request_id": request_id}
